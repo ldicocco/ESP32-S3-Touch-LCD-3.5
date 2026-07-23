@@ -25,14 +25,29 @@ Full pinout and board details: see [CLAUDE.md](CLAUDE.md) and the
 - [`esp-hal`](https://github.com/esp-rs/esp-hal) — bare-metal `no_std` HAL for the ESP32-S3
 - [`esp-rtos`](https://github.com/esp-rs/esp-hal) + `embassy-executor` / `embassy-time` — async runtime
 - [`oxivgl`](https://crates.io/crates/oxivgl) — safe Rust bindings for **LVGL 9.5**
+- [`esp-radio`](https://crates.io/crates/esp-radio) + [`embassy-net`](https://crates.io/crates/embassy-net) — Wi-Fi station with DHCP
 - [`esp-println`](https://github.com/esp-rs/esp-println) / [`esp-backtrace`](https://github.com/esp-rs/esp-backtrace) — serial console and panic backtraces over USB-Serial-JTAG
 
 ## Status
 
 Working on the board: an **LVGL 9.5 demo UI** (via oxivgl) on the 320×480
 panel — title, tap-counter button, slider, live touch-coordinate label,
-and LVGL's FPS/CPU overlay — driven by the FT6336 capacitive touch
-controller. `cargo run --release` builds and flashes it.
+Wi-Fi status, and LVGL's FPS/CPU overlay — driven by the FT6336
+capacitive touch controller, plus **Wi-Fi** (station + DHCP via
+esp-radio/embassy-net). `cargo run --release` builds and flashes it.
+
+Wi-Fi credentials are compile-time env vars:
+
+```sh
+WIFI_SSID=MyNetwork WIFI_PASSWORD=secret cargo run --release
+```
+
+Without them the firmware just scans and logs nearby access points at
+boot; the UI shows "WiFi: unconfigured".
+
+Keys quoted as dash-separated groups of four (`XXXX-XXXX-…`, as printed on
+many router labels) are accepted as-is — the dashes are stripped
+automatically (and logged) when the password matches exactly that shape.
 
 Standalone diagnostics, useful when bring-up breaks:
 
@@ -41,7 +56,7 @@ Standalone diagnostics, useful when bring-up breaks:
 - `cargo run --release --bin lcd-test` — ST7796 init + color bars, no LVGL
 - `cargo run --release --bin touch-test` — FT6336 coordinates on serial
 
-Not yet touched: AXP2101 PMU, RTC, IMU, SD card, audio, camera, Wi-Fi. See the bring-up plan in
+Not yet touched: AXP2101 PMU, RTC, IMU, SD card, audio, camera. See the bring-up plan in
 [CLAUDE.md](CLAUDE.md). The sibling project
 [ESP32-S3-5inch-Display](../ESP32-S3-5inch-Display) (same stack, parallel
 RGB panel) serves as the reference implementation.

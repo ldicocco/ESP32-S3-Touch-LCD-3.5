@@ -18,6 +18,7 @@ use oxivgl::view::{NavAction, View};
 use oxivgl::widgets::{Align, Button, Label, Obj, Slider, WidgetError};
 
 use crate::touch::{TOUCH_STATE, TOUCH_XY, unpack};
+use crate::wifi::{STATE_CONNECTED, STATE_CONNECTING, WIFI_IP, WIFI_STATE};
 
 static TAPS: AtomicU32 = AtomicU32::new(0);
 
@@ -34,10 +35,12 @@ pub struct DemoView {
   slider: Option<Slider<'static>>,
   slider_label: Option<Label<'static>>,
   coords_label: Option<Label<'static>>,
+  wifi_label: Option<Label<'static>>,
   _statics: Option<(Label<'static>, Button<'static>, Label<'static>)>,
   last_taps: u32,
   last_slider: i32,
   last_xy: u32,
+  last_wifi: (u8, u32),
 }
 
 impl View for DemoView {
@@ -89,12 +92,19 @@ impl View for DemoView {
       .add_style(&body_style, Selector::DEFAULT)
       .align_to(&slider, Align::OutBottomMid, 0, 16);
 
+    let wifi = Label::new(container)?;
+    wifi
+      .text(wifi_text(WIFI_STATE.load(Ordering::Relaxed), 0).as_str())
+      .add_style(&body_style, Selector::DEFAULT)
+      .align(Align::BottomMid, 0, -72);
+
     let coords = Label::new(container)?;
     coords
       .text("Touch: -")
       .add_style(&body_style, Selector::DEFAULT)
       .align(Align::BottomMid, 0, -32);
 
+    self.wifi_label = Some(wifi);
     self.taps_label = Some(taps);
     self.slider = Some(slider);
     self.slider_label = Some(slider_label);
@@ -144,6 +154,29 @@ impl View for DemoView {
         };
       }
     }
+
+    let wifi = (
+      WIFI_STATE.load(Ordering::Relaxed),
+      WIFI_IP.load(Ordering::Relaxed),
+    );
+    if wifi != self.last_wifi {
+      self.last_wifi = wifi;
+      if let Some(l) = &self.wifi_label {
+        l.text(wifi_text(wifi.0, wifi.1).as_str());
+      }
+    }
     Ok(NavAction::None)
+  }
+}
+
+fn wifi_text(state: u8, ip: u32) -> alloc::string::String {
+  if ip != 0 {
+    let [a, b, c, d] = ip.to_be_bytes();
+    return format!("WiFi: {a}.{b}.{c}.{d}");
+  }
+  match state {
+    STATE_CONNECTING => "WiFi: connecting...".into(),
+    STATE_CONNECTED => "WiFi: connected (DHCP...)".into(),
+    _ => "WiFi: unconfigured".into(),
   }
 }

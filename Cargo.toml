@@ -12,7 +12,13 @@ path = "./src/bin/main.rs"
 [dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
 
-esp-rtos = { version = "0.3.0", features = ["embassy", "esp32s3", "log-04"] }
+esp-rtos = { version = "0.3.0", features = [
+  "embassy",
+  "esp-alloc",
+  "esp-radio",
+  "esp32s3",
+  "log-04",
+] }
 
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3", "log-04"] }
 log                    = "0.4.27"
@@ -29,6 +35,35 @@ esp-println = { version = "0.17.0", features = ["esp32s3", "log-04"] }
 critical-section = "1.2.0"
 embedded-hal     = "1"
 esp-alloc        = { version = "0.10.0", features = ["esp32s3"] }
+
+# Wi-Fi: esp-radio driver + embassy-net (DHCP/TCP/UDP) on smoltcp.
+esp-radio = { version = "0.18.0", features = [
+  "esp-alloc",
+  "esp32s3",
+  "log-04",
+  "unstable",
+  "wifi",
+] }
+embassy-net = { version = "0.9.1", features = [
+  "dhcpv4",
+  "log",
+  "medium-ethernet",
+  "tcp",
+  "udp",
+] }
+smoltcp = { version = "0.13.0", default-features = false, features = [
+  "log",
+  "medium-ethernet",
+  "multicast",
+  "proto-dhcpv4",
+  "proto-dns",
+  "proto-ipv4",
+  "socket-dns",
+  "socket-icmp",
+  "socket-raw",
+  "socket-tcp",
+  "socket-udp",
+] }
 
 # LVGL UI. Pinned exact: oxivgl is pre-1.0 and explicitly not API-stable.
 # `esp32s3` transitively enables oxivgl's `esp-hal` feature (flush pipeline).

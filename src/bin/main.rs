@@ -26,6 +26,7 @@ use esp32_s3_touch_lcd_3_5::display::{HEIGHT, LVGL_BUF_BYTES, St7796, WIDTH, flu
 use esp32_s3_touch_lcd_3_5::tca9554::{EXIO_LCD_RST, Tca9554};
 use esp32_s3_touch_lcd_3_5::touch::touch_task;
 use esp32_s3_touch_lcd_3_5::ui::DemoView;
+use esp32_s3_touch_lcd_3_5::wifi;
 use oxivgl::display::LvglBuffers;
 use oxivgl::view::run_app;
 use static_cell::StaticCell;
@@ -56,11 +57,13 @@ async fn main(spawner: Spawner) -> ! {
   let peripherals = esp_hal::init(config);
 
   // Internal-RAM global heap (the reclaimed dram2 bootloader region — zero
-  // .bss cost). oxivgl serves LVGL's render scratch from the Rust global
+  // .bss cost — plus a second .bss region: the Wi-Fi driver is the big
+  // customer). oxivgl serves LVGL's render scratch from the Rust global
   // allocator; LVGL widget memory comes from its own 32 KiB static pool
   // (LV_MEM_SIZE in lv-conf/lv_conf.h). No PSRAM anywhere: the SPI panel
   // needs no framebuffer — LVGL stripes flush straight out over SPI.
   esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
+  esp_alloc::heap_allocator!(size: 64 * 1024);
 
   let timg0 = TimerGroup::new(peripherals.TIMG0);
   let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
@@ -116,6 +119,10 @@ async fn main(spawner: Spawner) -> ! {
   hi_spawner.spawn(flush_task(panel).expect("flush task pool exhausted"));
 
   spawner.spawn(touch_task(i2c).expect("touch task pool exhausted"));
+
+  // Wi-Fi: STA + DHCP when WIFI_SSID/WIFI_PASSWORD were set at build time,
+  // scan-only otherwise. Must run after esp_rtos::start and the heap.
+  wifi::start(&spawner, peripherals.WIFI);
 
   // LVGL double render buffers (.bss, internal RAM).
   static mut LVGL_BUFS: LvglBuffers<LVGL_BUF_BYTES> = LvglBuffers::new();

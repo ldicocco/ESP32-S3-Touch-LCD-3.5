@@ -189,6 +189,11 @@ absent camera use they're free.
   bus citizens in firmware (TCA9554 bring-up → released to the touch
   task). A sharing strategy (`CriticalSectionDevice` or async mutex) is
   needed the moment the PMU/RTC/IMU come up.
+- **`esp-radio`** (0.18, features `wifi` + `esp-alloc` + `unstable`) +
+  **`embassy-net`** (0.9, DHCP/TCP/UDP) — Wi-Fi STA. Needs esp-rtos
+  features `esp-alloc` + `esp-radio` (the radio blob rides on the esp-rtos
+  scheduler; `esp_radio::wifi::new` must run after `esp_rtos::start`).
+  The driver allocates ~46 KiB from the esp-alloc heap at init.
 
 ## Toolchain
 
@@ -270,12 +275,15 @@ are confirmed, not just demo-derived.
 
 Current firmware (runs on the board): **LVGL 9.5 demo UI via oxivgl
 0.6.1** — title, tap-counter button, slider, live touch-coordinate label,
-FPS/CPU overlay — with FT6336 touch and a 1 Hz debug-level heartbeat.
+Wi-Fi status label, FPS/CPU overlay — with FT6336 touch, **Wi-Fi STA**
+(scan, WPA2 connect, and DHCP all verified on hardware; credentials via
+`WIFI_SSID=x WIFI_PASSWORD=y cargo run --release`), and a 1 Hz
+debug-level heartbeat.
 
-- `src/bin/main.rs` — entry point (`#[esp_rtos::main]`); internal-RAM heap
-  (73 744 B, reclaimed dram2), TCA9554 panel reset → bus release, ST7796
-  init, interrupt executor (flush), touch task, then
-  `oxivgl::view::run_app` (never returns).
+- `src/bin/main.rs` — entry point (`#[esp_rtos::main]`); heap = 73 744 B
+  reclaimed dram2 + 64 KiB .bss (Wi-Fi is the big customer), TCA9554 panel
+  reset → bus release, ST7796 init, interrupt executor (flush), touch
+  task, `wifi::start`, then `oxivgl::view::run_app` (never returns).
 - `src/bin/i2c-scan.rs` — diagnostic: I²C bus scan with expected-device
   check + backlight (GPIO6) blink
   (`cargo run --release --bin i2c-scan`; verified on the board).
@@ -302,16 +310,26 @@ FPS/CPU overlay — with FT6336 touch and a 1 Hz debug-level heartbeat.
 - `src/touch.rs` — 15 ms FT6336 poll task feeding oxivgl's `PointerState`
   (+ packed `TOUCH_XY` atomic for the UI's live label).
 - `src/ui.rs` — `DemoView` (oxivgl `View` impl); registers the
-  `PointerIndev`.
+  `PointerIndev`; Wi-Fi status label fed from `wifi`'s atomics.
+- `src/wifi.rs` — Wi-Fi STA: `wifi::start` builds the esp-radio
+  controller + embassy-net stack (DHCP); with compile-time credentials it
+  spawns connect/net/ip tasks (state + IPv4 published via atomics for the
+  UI), without them it does a one-shot AP scan (serial) and parks. Open
+  networks unsupported (assumes WPA2-personal). Passwords shaped exactly
+  like dash-separated groups of four (`XXXX-XXXX-…`, router-label style)
+  get their dashes stripped automatically (logged) — a genuine password
+  of that shape would be mangled by this.
 - `lv-conf/lv_conf.h` — LVGL v9.5 config (copied from the 5-inch repo;
   32 KiB `LV_MEM_SIZE`, Montserrat 14–32, perf monitor on).
 - `build.rs` — generated; `linkall.x` linker script + friendly
   linker-error hints. Don't modify casually.
 
 Bring-up: steps 1–6 done (scaffold, heartbeat, I²C scan + backlight,
-color bars, touch poll, LVGL). Remaining: AXP2101, RTC, IMU, SD, audio,
-Wi-Fi, LEDC backlight PWM — as needed. **Visual checks pending:** color
-order (lcd-test bars: if red/blue swapped, flip the BGR bit in
+color bars, touch poll, LVGL) plus Wi-Fi — fully hardware-verified
+2026-07-23: scan finds local APs, and with real credentials the station
+associates (WPA2) and gets a DHCP lease, alongside the running LVGL UI.
+Remaining: AXP2101, RTC, IMU, SD, audio, LEDC backlight PWM — as needed. **Visual checks pending:** color order
+(lcd-test bars: if red/blue swapped, flip the BGR bit in
 `MADCTL_PORTRAIT`) and touch↔display alignment (tap the demo button; if x
 feels mirrored, mirror x in `touch_task`).
 
