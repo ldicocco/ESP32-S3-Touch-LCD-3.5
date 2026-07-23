@@ -277,12 +277,18 @@ are confirmed, not just demo-derived.
 - `src/bin/lcd-test.rs` — diagnostic: TCA9554 reset pulse → ST7796 init →
   eight color bars (`cargo run --release --bin lcd-test`; runs error-free
   on the board).
-- `src/lib.rs` — `#![no_std]` lib: `display`, `tca9554` modules.
+- `src/bin/touch-test.rs` — diagnostic: FT6336 info + 20 ms coordinate
+  poll to serial (`cargo run --release --bin touch-test`; verified on the
+  board — chip id 0x64, fw 0x10, vendor 0x11, live coordinates confirmed).
+- `src/lib.rs` — `#![no_std]` lib: `display`, `ft6336`, `tca9554` modules.
 - `src/display.rs` — ST7796 blocking-SPI driver: Waveshare's vendored init
   sequence (from their `esp_lcd_st7796` component — panel-specific gamma /
   power tables, NOT Espressif's upstream defaults), MADCTL = MX|BGR
   (`0x48`), COLMOD 16 bpp, inversion on, `set_window` + `push_pixels`
   (RGB565 big-endian on the wire).
+- `src/ft6336.rs` — minimal FT6336 touch driver, poll-only (no INT/RST
+  GPIOs on this board): count reg 0x02, 6-byte point records from 0x03,
+  up to 2 points, raw panel coordinates.
 - `src/tca9554.rs` — minimal TCA9554 driver (shadowed OUTPUT/CONFIG regs,
   generic over `embedded_hal::i2c::I2c`).
 - `build.rs` — generated; `linkall.x` linker script + friendly
@@ -295,7 +301,7 @@ order):
 4. ~~Panel color bars~~ ✓ (runs error-free; **visual check of color order
    and orientation still pending** — if red/blue are swapped, flip the BGR
    bit in `MADCTL_PORTRAIT`)
-5. FT6336 touch poll → serial coordinates.
+5. ~~FT6336 touch poll~~ ✓ (live coordinates verified on the board)
 6. LVGL via oxivgl: SPI flush callback, stripe draw buffers in internal
    SRAM (also add the oxivgl `[env]` vars to `.cargo/config.toml` and
    `lv-conf/` at this point — deliberately not present yet, and

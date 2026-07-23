@@ -36,8 +36,10 @@ Early bring-up. Working so far (verified on the board):
   diagnostic (`cargo run --release --bin i2c-scan`)
 - ST7796 panel bring-up: reset via TCA9554, full init, color bars
   (`cargo run --release --bin lcd-test`)
+- FT6336 touch polling with live coordinates on serial
+  (`cargo run --release --bin touch-test`)
 
-Next: FT6336 touch, then LVGL. See the bring-up plan in
+Next: LVGL. See the bring-up plan in
 [CLAUDE.md](CLAUDE.md). The sibling project
 [ESP32-S3-5inch-Display](../ESP32-S3-5inch-Display) (same stack, parallel
 RGB panel) serves as the reference implementation.
