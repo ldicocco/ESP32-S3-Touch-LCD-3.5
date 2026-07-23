@@ -178,18 +178,17 @@ absent camera use they're free.
   (`LV_COLOR_FORMAT_RGB565_SWAPPED` default byte order — likely correct
   as-is for ST7796 over SPI, unlike the DPI panel which needed the
   override).
-- Panel driver: `mipidsi` crate supports ST7796 and is the obvious
-  candidate; otherwise a minimal in-repo init-sequence + DMA blit is ~100
-  lines. Match the demo's BGR + inversion settings.
-- Touch: FT6336 is register-compatible with FT6x06/FT6236 — candidate
-  crates `ft6x06`/`ft6x36`, or a minimal in-repo driver (the GT911 driver
-  in the 5-inch repo is a good size template).
-- Expander: TCA9554 is PCA9554-compatible → the `port-expander` crate
-  (PCA9554 support) or a trivial in-repo driver.
+- Panel driver: minimal in-repo ST7796 (`src/display.rs`) — Waveshare's
+  vendored init sequence, BGR + inversion, blocking SPI.
+- Touch: minimal in-repo FT6336 driver (`src/ft6336.rs`), poll-only.
+- Expander: minimal in-repo TCA9554 driver (`src/tca9554.rs`).
 - PMU: AXP2101 — `axp2101` crates exist but are young; verify or write a
-  minimal one (rails + charger config only).
-- **`embedded-hal-bus`** — the I²C bus is shared by six devices; an async
-  or `CriticalSectionDevice` sharing strategy is required from day one.
+  minimal one (rails + charger config only). Not needed for USB-powered
+  display work (the board boots on PMU hardware defaults).
+- **`embedded-hal-bus`** — the I²C bus has six devices but so far only two
+  bus citizens in firmware (TCA9554 bring-up → released to the touch
+  task). A sharing strategy (`CriticalSectionDevice` or async mutex) is
+  needed the moment the PMU/RTC/IMU come up.
 
 ## Toolchain
 
@@ -269,8 +268,14 @@ all six expected devices at the predicted addresses (0x18, 0x20, 0x34,
 0x38, 0x51, 0x6B) on SDA=GPIO8 / SCL=GPIO7 — the pin/address tables above
 are confirmed, not just demo-derived.
 
-- `src/bin/main.rs` — entry point (`#[esp_rtos::main]`); currently a 1 Hz
-  heartbeat over USB-Serial-JTAG (verified on the board).
+Current firmware (runs on the board): **LVGL 9.5 demo UI via oxivgl
+0.6.1** — title, tap-counter button, slider, live touch-coordinate label,
+FPS/CPU overlay — with FT6336 touch and a 1 Hz debug-level heartbeat.
+
+- `src/bin/main.rs` — entry point (`#[esp_rtos::main]`); internal-RAM heap
+  (73 744 B, reclaimed dram2), TCA9554 panel reset → bus release, ST7796
+  init, interrupt executor (flush), touch task, then
+  `oxivgl::view::run_app` (never returns).
 - `src/bin/i2c-scan.rs` — diagnostic: I²C bus scan with expected-device
   check + backlight (GPIO6) blink
   (`cargo run --release --bin i2c-scan`; verified on the board).
@@ -280,37 +285,60 @@ are confirmed, not just demo-derived.
 - `src/bin/touch-test.rs` — diagnostic: FT6336 info + 20 ms coordinate
   poll to serial (`cargo run --release --bin touch-test`; verified on the
   board — chip id 0x64, fw 0x10, vendor 0x11, live coordinates confirmed).
-- `src/lib.rs` — `#![no_std]` lib: `display`, `ft6336`, `tca9554` modules.
+- `src/lib.rs` — `#![no_std]` lib: `display`, `ft6336`, `tca9554`,
+  `touch`, `ui` modules.
 - `src/display.rs` — ST7796 blocking-SPI driver: Waveshare's vendored init
   sequence (from their `esp_lcd_st7796` component — panel-specific gamma /
   power tables, NOT Espressif's upstream defaults), MADCTL = MX|BGR
   (`0x48`), COLMOD 16 bpp, inversion on, `set_window` + `push_pixels`
-  (RGB565 big-endian on the wire).
+  (RGB565 big-endian on the wire). Plus the oxivgl flush endpoint:
+  `DisplayOutput for St7796` (stripe → set_window → SPI burst) and
+  `flush_task`.
 - `src/ft6336.rs` — minimal FT6336 touch driver, poll-only (no INT/RST
   GPIOs on this board): count reg 0x02, 6-byte point records from 0x03,
   up to 2 points, raw panel coordinates.
 - `src/tca9554.rs` — minimal TCA9554 driver (shadowed OUTPUT/CONFIG regs,
   generic over `embedded_hal::i2c::I2c`).
+- `src/touch.rs` — 15 ms FT6336 poll task feeding oxivgl's `PointerState`
+  (+ packed `TOUCH_XY` atomic for the UI's live label).
+- `src/ui.rs` — `DemoView` (oxivgl `View` impl); registers the
+  `PointerIndev`.
+- `lv-conf/lv_conf.h` — LVGL v9.5 config (copied from the 5-inch repo;
+  32 KiB `LV_MEM_SIZE`, Montserrat 14–32, perf monitor on).
 - `build.rs` — generated; `linkall.x` linker script + friendly
   linker-error hints. Don't modify casually.
 
-Bring-up plan, remaining steps (mirroring the 5-inch project's proven
-order):
+Bring-up: steps 1–6 done (scaffold, heartbeat, I²C scan + backlight,
+color bars, touch poll, LVGL). Remaining: AXP2101, RTC, IMU, SD, audio,
+Wi-Fi, LEDC backlight PWM — as needed. **Visual checks pending:** color
+order (lcd-test bars: if red/blue swapped, flip the BGR bit in
+`MADCTL_PORTRAIT`) and touch↔display alignment (tap the demo button; if x
+feels mirrored, mirror x in `touch_task`).
 
-1. ~~Scaffold~~ ✓  2. ~~Heartbeat~~ ✓  3. ~~I²C scan + backlight~~ ✓
-4. ~~Panel color bars~~ ✓ (runs error-free; **visual check of color order
-   and orientation still pending** — if red/blue are swapped, flip the BGR
-   bit in `MADCTL_PORTRAIT`)
-5. ~~FT6336 touch poll~~ ✓ (live coordinates verified on the board)
-6. LVGL via oxivgl: SPI flush callback, stripe draw buffers in internal
-   SRAM (also add the oxivgl `[env]` vars to `.cargo/config.toml` and
-   `lv-conf/` at this point — deliberately not present yet, and
-   `build-std` is still `["core"]` without `alloc`).
-7. Then the rest as needed: AXP2101, RTC, IMU, SD, audio, Wi-Fi.
+Display / LVGL architecture notes (much simpler than the 5-inch board —
+no PSRAM framebuffer, no scanout, no bounce buffers):
 
-Keep standalone diagnostic binaries in `src/bin/` (the 5-inch repo's
-`backlight-test` / `scanout-test` pattern) — they pay for themselves the
-first time the panel is black.
+- **Flush path:** LVGL renders 40-line stripes into two static internal-RAM
+  draw buffers (`LvglBuffers<LVGL_BUF_BYTES>`, 2 × 25 KiB .bss);
+  `flush_task` (interrupt executor, `software_interrupt1`,
+  `Priority::min()`) drains oxivgl's flush channel and pushes each stripe
+  over blocking SPI (~2.6 ms per stripe at 80 MHz). oxivgl's flush
+  wait-callback spins inside the LVGL task until the flush task acks, so
+  the two must never share an executor. Upgrade path if flush time ever
+  dominates: DMA + async SPI writes.
+- **Byte order:** oxivgl registers the display as
+  `LV_COLOR_FORMAT_RGB565_SWAPPED` — which IS the ST7796's SPI wire order
+  (big-endian byte pairs), so stripes are written verbatim and no
+  color-format override is needed (the 5-inch DPI panel needs the
+  opposite).
+- **Memory:** global allocator = 73 744 B internal-RAM heap (reclaimed
+  dram2); LVGL widget memory from its 32 KiB static pool (demo uses
+  ~9 KiB). PSRAM is entirely unused so far — not even mapped.
+- **I²C ownership:** TCA9554 does the panel-reset pulse, then `release()`s
+  the bus to the touch task (exclusive owner, 15 ms poll).
+
+Keep standalone diagnostic binaries in `src/bin/` (`i2c-scan`, `lcd-test`,
+`touch-test`) — they pay for themselves the first time the panel is black.
 
 API gotcha (embassy-executor 0.10): a `#[embassy_executor::task]` fn
 returns `Result<SpawnToken, SpawnError>` and `Spawner::spawn(token)`
