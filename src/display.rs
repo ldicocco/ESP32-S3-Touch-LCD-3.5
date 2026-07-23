@@ -15,9 +15,17 @@ use esp_hal::delay::Delay;
 use esp_hal::gpio::Output;
 use esp_hal::spi::Error as SpiError;
 use esp_hal::spi::master::Spi;
+use oxivgl::flush_pipeline::{DisplayOutput, UiError, flush_frame_buffer};
 
 pub const WIDTH: usize = 320;
 pub const HEIGHT: usize = 480;
+
+/// Rows per LVGL render stripe (per draw buffer): 40 rows = 12 stripes per
+/// full refresh, 2 × 25 KiB of .bss. Each stripe is one blocking SPI burst
+/// (~2.6 ms at 80 MHz); upgrade path is DMA + async SPI if flush time ever
+/// dominates.
+pub const LVGL_BUF_LINES: usize = 40;
+pub const LVGL_BUF_BYTES: usize = WIDTH * LVGL_BUF_LINES * 2;
 
 // MADCTL: MX (mirror X, matching the demo's rotation-0 config) + BGR.
 const MADCTL_PORTRAIT: u8 = 0x40 | 0x08;
@@ -108,4 +116,44 @@ impl<'d> St7796<'d> {
 /// RGB565 color as the big-endian byte pair the panel expects on the wire.
 pub const fn rgb565_bytes(color: u16) -> [u8; 2] {
   color.to_be_bytes()
+}
+
+/// oxivgl flush endpoint: each LVGL stripe goes straight out over SPI.
+///
+/// oxivgl registers the display as `LV_COLOR_FORMAT_RGB565_SWAPPED`, i.e.
+/// LVGL renders each pixel as a big-endian byte pair — exactly the ST7796's
+/// wire order, so the buffer is written verbatim (no per-pixel swap, no
+/// color-format override; contrast with the 5-inch DPI panel, which needs
+/// the native-RGB565 override in its `ui.rs`).
+impl DisplayOutput for St7796<'static> {
+  async fn show_raw_data(
+    &mut self,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    data: &[u8],
+  ) -> Result<(), UiError> {
+    let bytes = w as usize * h as usize * 2;
+    if x as usize + w as usize > WIDTH
+      || y as usize + h as usize > HEIGHT
+      || w == 0
+      || h == 0
+      || data.len() < bytes
+    {
+      return Err(UiError::Display);
+    }
+    self
+      .set_window(x, y, x + w - 1, y + h - 1)
+      .and_then(|()| self.push_pixels(&data[..bytes]))
+      .map_err(|_| UiError::Display)
+  }
+}
+
+/// Drains LVGL's flush channel into the panel. Runs on the interrupt
+/// executor: oxivgl's wait callback spins inside the LVGL render task until
+/// the flush task acks, so they can never share an executor.
+#[embassy_executor::task]
+pub async fn flush_task(panel: St7796<'static>) -> ! {
+  flush_frame_buffer(panel).await
 }

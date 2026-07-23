@@ -29,17 +29,19 @@ Full pinout and board details: see [CLAUDE.md](CLAUDE.md) and the
 
 ## Status
 
-Early bring-up. Working so far (verified on the board):
+Working on the board: an **LVGL 9.5 demo UI** (via oxivgl) on the 320×480
+panel — title, tap-counter button, slider, live touch-coordinate label,
+and LVGL's FPS/CPU overlay — driven by the FT6336 capacitive touch
+controller. `cargo run --release` builds and flashes it.
 
-- 1 Hz serial heartbeat over USB-Serial-JTAG (`src/bin/main.rs`)
-- I²C bus scan finding all six onboard devices + backlight blink
-  diagnostic (`cargo run --release --bin i2c-scan`)
-- ST7796 panel bring-up: reset via TCA9554, full init, color bars
-  (`cargo run --release --bin lcd-test`)
-- FT6336 touch polling with live coordinates on serial
-  (`cargo run --release --bin touch-test`)
+Standalone diagnostics, useful when bring-up breaks:
 
-Next: LVGL. See the bring-up plan in
+- `cargo run --release --bin i2c-scan` — I²C bus scan (expects all six
+  onboard devices) + backlight blink
+- `cargo run --release --bin lcd-test` — ST7796 init + color bars, no LVGL
+- `cargo run --release --bin touch-test` — FT6336 coordinates on serial
+
+Not yet touched: AXP2101 PMU, RTC, IMU, SD card, audio, camera, Wi-Fi. See the bring-up plan in
 [CLAUDE.md](CLAUDE.md). The sibling project
 [ESP32-S3-5inch-Display](../ESP32-S3-5inch-Display) (same stack, parallel
 RGB panel) serves as the reference implementation.

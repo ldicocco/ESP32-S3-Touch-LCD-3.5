@@ -5,6 +5,15 @@ runner = "espflash flash --monitor --chip esp32s3 --flash-mode dio --flash-freq 
 
 [env]
 ESP_LOG = "info"
+# Directory containing lv_conf.h; required by oxivgl-sys's build script.
+DEP_LV_CONFIG_PATH = { value = "lv-conf", relative = true }
+# Give bindgen's clang the Xtensa newlib sysroot so LVGL's libc includes
+# (stdint.h etc.) resolve. Path comes from the espup xtensa-esp-elf toolchain;
+# bump the esp-XX.Y.Z segment when the toolchain is updated.
+BINDGEN_EXTRA_CLANG_ARGS = "--sysroot=/Users/luciano/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/xtensa-esp-elf"
+# Pin the C cross-compiler for LVGL's C sources; without this the cc crate
+# picks a compiler that emits big-endian Xtensa objects, which fail to link.
+CC_xtensa_esp32s3_none_elf = "xtensa-esp32s3-elf-gcc"
 
 [build]
 rustflags = [
@@ -14,4 +23,4 @@ rustflags = [
 target = "xtensa-esp32s3-none-elf"
 
 [unstable]
-build-std = ["core"]
+build-std = ["core", "alloc"]
