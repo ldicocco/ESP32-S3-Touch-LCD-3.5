@@ -185,10 +185,11 @@ absent camera use they're free.
 - PMU: AXP2101 — `axp2101` crates exist but are young; verify or write a
   minimal one (rails + charger config only). Not needed for USB-powered
   display work (the board boots on PMU hardware defaults).
-- **`embedded-hal-bus`** — the I²C bus has six devices but so far only two
-  bus citizens in firmware (TCA9554 bring-up → released to the touch
-  task). A sharing strategy (`CriticalSectionDevice` or async mutex) is
-  needed the moment the PMU/RTC/IMU come up.
+- I²C sharing: **no `embedded-hal-bus`** — a single sensor-hub task
+  (`src/sensors.rs`) owns the bus and multiplexes touch/IMU/PMU/RTC on a
+  15 ms ticker; drivers are constructed transiently per poll via the
+  `&mut bus` blanket `embedded_hal::i2c::I2c` impl. Revisit only if a
+  device ever needs bus access from a second task.
 - **`esp-radio`** (0.18, features `wifi` + `esp-alloc` + `unstable`) +
   **`embassy-net`** (0.9, DHCP/TCP/UDP) — Wi-Fi STA. Needs esp-rtos
   features `esp-alloc` + `esp-radio` (the radio blob rides on the esp-rtos
@@ -273,17 +274,23 @@ all six expected devices at the predicted addresses (0x18, 0x20, 0x34,
 0x38, 0x51, 0x6B) on SDA=GPIO8 / SCL=GPIO7 — the pin/address tables above
 are confirmed, not just demo-derived.
 
-Current firmware (runs on the board): **LVGL 9.5 demo UI via oxivgl
-0.6.1** — title, tap-counter button, slider, live touch-coordinate label,
-Wi-Fi status label, FPS/CPU overlay — with FT6336 touch, **Wi-Fi STA**
-(scan, WPA2 connect, and DHCP all verified on hardware; credentials via
-`WIFI_SSID=x WIFI_PASSWORD=y cargo run --release`), and a 1 Hz
-debug-level heartbeat.
+Current firmware (runs on the board, all hardware-verified 2026-07-23):
+**four-tab LVGL 9.5 demo UI via oxivgl 0.6.1** — `Home` (RTC clock/date,
+Wi-Fi card, AXP2101 battery gauge ring, uptime), `IMU` (live 3-axis accel
+chart 6 s @ 10 Hz, numeric readouts, bubble level, gyro line), `Play`
+(tap-counter button, slider, switch+LED, roller, touch coords), `System`
+(backlight brightness slider — actually dims the panel via LEDC —, 1 Hz
+stats table: IP/heaps/uptime), bottom tab bar, FPS/CPU overlay — plus
+**Wi-Fi STA** (scan, WPA2 connect, DHCP; credentials via
+`WIFI_SSID=x WIFI_PASSWORD=y cargo run --release`) and a 1 Hz debug-level
+heartbeat. LVGL pool after create: ~20 KiB used / 25 KiB free (of 48 KiB).
 
 - `src/bin/main.rs` — entry point (`#[esp_rtos::main]`); heap = 73 744 B
   reclaimed dram2 + 64 KiB .bss (Wi-Fi is the big customer), TCA9554 panel
-  reset → bus release, ST7796 init, interrupt executor (flush), touch
-  task, `wifi::start`, then `oxivgl::view::run_app` (never returns).
+  reset → bus release, **LEDC backlight** (LowSpeed timer0, 5 kHz,
+  10-bit, channel0 on GPIO6; `Ledc` + timer in `StaticCell`s so the
+  channel is `'static`), ST7796 init, interrupt executor (flush), sensor
+  hub task, `wifi::start`, then `oxivgl::view::run_app` (never returns).
 - `src/bin/i2c-scan.rs` — diagnostic: I²C bus scan with expected-device
   check + backlight (GPIO6) blink
   (`cargo run --release --bin i2c-scan`; verified on the board).
@@ -293,8 +300,14 @@ debug-level heartbeat.
 - `src/bin/touch-test.rs` — diagnostic: FT6336 info + 20 ms coordinate
   poll to serial (`cargo run --release --bin touch-test`; verified on the
   board — chip id 0x64, fw 0x10, vendor 0x11, live coordinates confirmed).
-- `src/lib.rs` — `#![no_std]` lib: `display`, `ft6336`, `tca9554`,
-  `touch`, `ui` modules.
+- `src/bin/sensor-test.rs` — diagnostic: QMI8658 + AXP2101 + PCF85063
+  bring-up and 1 s readings to serial; sets the RTC once at boot when
+  built with `RTC_SET="YYYY-MM-DD HH:MM:SS"` (verified on the board:
+  whoami 0x05 rev 0x7c, gravity ≈ −950 mg on Z lying flat, VBUS ≈ 5.19 V,
+  battery-absent flags, RTC ticking; status1=0x20/status2=0x15 on USB
+  power confirm the STATUS bit layout).
+- `src/lib.rs` — `#![no_std]` lib: `axp2101`, `display`, `ft6336`,
+  `pcf85063`, `qmi8658`, `sensors`, `tca9554`, `touch`, `ui`, `wifi`.
 - `src/display.rs` — ST7796 blocking-SPI driver: Waveshare's vendored init
   sequence (from their `esp_lcd_st7796` component — panel-specific gamma /
   power tables, NOT Espressif's upstream defaults), MADCTL = MX|BGR
@@ -307,10 +320,40 @@ debug-level heartbeat.
   up to 2 points, raw panel coordinates.
 - `src/tca9554.rs` — minimal TCA9554 driver (shadowed OUTPUT/CONFIG regs,
   generic over `embedded_hal::i2c::I2c`).
-- `src/touch.rs` — 15 ms FT6336 poll task feeding oxivgl's `PointerState`
-  (+ packed `TOUCH_XY` atomic for the UI's live label).
-- `src/ui.rs` — `DemoView` (oxivgl `View` impl); registers the
-  `PointerIndev`; Wi-Fi status label fed from `wifi`'s atomics.
+- `src/qmi8658.rs` — minimal QMI8658 IMU driver: whoami (0x05), reset
+  (0x60=0xB0, needs ~15 ms — `reset()`/`configure()` split so the caller
+  waits), CTRL1 auto-increment, ±4 g / ±512 dps @ 125 Hz, 12-byte LE burst
+  from AX_L 0x35; `accel_mg`/`gyro_mdps` converters. Register values
+  hardware-verified.
+- `src/axp2101.rs` — minimal AXP2101 PMU driver, read-mostly: `init()`
+  writes only reg 0x30=0x0D (VBAT/VBUS/VSYS ADC on, **TS measure off** —
+  the battery-charging gotcha is retired up front); status bits
+  (STATUS1 bit5 VBUS-good / bit3 battery-present, STATUS2 bits6:5
+  direction / bits2:0 charge state), 14-bit 1 mV/LSB VBAT/VBUS reads,
+  fuel-gauge percent 0xA4 (garbage without battery — gate on the
+  battery-present bit). Rails untouched (hardware defaults).
+- `src/pcf85063.rs` — minimal PCF85063 RTC driver: 7-byte BCD burst at
+  0x04, seconds bit7 = oscillator-stop → `read() -> (DateTime, valid)`;
+  `set()` clears OS.
+- `src/touch.rs` — shared touch state only (`TOUCH_STATE` for the LVGL
+  pointer indev, packed `TOUCH_XY` + helpers); polling lives in the hub.
+- `src/sensors.rs` — **the sensor hub**: one task owns the I²C bus and
+  multiplexes on a 15 ms ticker — touch every tick, IMU every 7th
+  (~10 Hz), PMU/RTC staggered at ~1 s (ticks %67==0 / ==33). Publishes
+  atomics for the UI (`IMU_SEQ` sample counter + per-axis mg/mdps,
+  `BAT_MV`/`BAT_PERCENT` (0xFF = no battery)/`PMU_FLAGS`, packed
+  `RTC_HMS`/`RTC_DATE`); consumes `BACKLIGHT_PCT` (applies LEDC duty,
+  clamped ≥5 %) and `RTC_SET` (time-of-day command, `swap(0)` handshake —
+  the future NTP hook). Drivers are constructed transiently per poll via
+  the `&mut bus` blanket I2c impl; a device that NACKs init or fails 5
+  consecutive polls is marked absent (never panics).
+- `src/ui/` — the four-tab UI: `mod.rs` (`DemoView`, shared `Theme` of
+  Rc-backed `Style`s — oxivgl deprecates per-object inline style setters —
+  bottom Tabview, one 1 Hz `oxivgl::timer::Timer` fanned out as a bool),
+  `home.rs`, `imu.rs`, `play.rs`, `system.rs`. Each tab: `create(pane,
+  theme)` + `update(active, ...)` diffing atomics against `last_*` caches;
+  chart is fed even when hidden (continuous history), label/bubble churn
+  only when visible. The backlight slider writes `BACKLIGHT_PCT`.
 - `src/wifi.rs` — Wi-Fi STA: `wifi::start` builds the esp-radio
   controller + embassy-net stack (DHCP); with compile-time credentials it
   spawns connect/net/ip tasks (state + IPv4 published via atomics for the
@@ -320,18 +363,20 @@ debug-level heartbeat.
   get their dashes stripped automatically (logged) — a genuine password
   of that shape would be mangled by this.
 - `lv-conf/lv_conf.h` — LVGL v9.5 config (copied from the 5-inch repo;
-  32 KiB `LV_MEM_SIZE`, Montserrat 14–32, perf monitor on).
+  **48 KiB `LV_MEM_SIZE`** — bumped for the 4-tab UI —, Montserrat 8–48,
+  perf monitor on). Changing it triggers a full LVGL C rebuild.
 - `build.rs` — generated; `linkall.x` linker script + friendly
   linker-error hints. Don't modify casually.
 
-Bring-up: steps 1–6 done (scaffold, heartbeat, I²C scan + backlight,
-color bars, touch poll, LVGL) plus Wi-Fi — fully hardware-verified
-2026-07-23: scan finds local APs, and with real credentials the station
-associates (WPA2) and gets a DHCP lease, alongside the running LVGL UI.
-Remaining: AXP2101, RTC, IMU, SD, audio, LEDC backlight PWM — as needed. **Visual checks pending:** color order
-(lcd-test bars: if red/blue swapped, flip the BGR bit in
-`MADCTL_PORTRAIT`) and touch↔display alignment (tap the demo button; if x
-feels mirrored, mirror x in `touch_task`).
+Bring-up: scaffold, heartbeat, I²C scan + backlight, color bars, touch,
+LVGL, Wi-Fi, **QMI8658 IMU, AXP2101 PMU (ADC/status subset), PCF85063
+RTC, LEDC backlight PWM** — all hardware-verified 2026-07-23. Remaining:
+SD, audio, camera, full PMU battery/rail config — as needed. **Visual
+checks pending:** color order (lcd-test bars: if red/blue swapped, flip
+the BGR bit in `MADCTL_PORTRAIT`), touch↔display alignment (tap the demo
+button; if x feels mirrored, mirror x in the hub's touch poll), and the
+bubble-level x/y signs (tilt the board; flip signs in `ui/imu.rs` if it
+moves the wrong way).
 
 Display / LVGL architecture notes (much simpler than the 5-inch board —
 no PSRAM framebuffer, no scanout, no bounce buffers):
@@ -350,13 +395,17 @@ no PSRAM framebuffer, no scanout, no bounce buffers):
   color-format override is needed (the 5-inch DPI panel needs the
   opposite).
 - **Memory:** global allocator = 73 744 B internal-RAM heap (reclaimed
-  dram2); LVGL widget memory from its 32 KiB static pool (demo uses
-  ~9 KiB). PSRAM is entirely unused so far — not even mapped.
+  dram2) + 64 KiB .bss; LVGL widget memory from its 48 KiB static pool
+  (4-tab UI uses ~20 KiB after create). PSRAM is entirely unused so far —
+  not even mapped.
 - **I²C ownership:** TCA9554 does the panel-reset pulse, then `release()`s
-  the bus to the touch task (exclusive owner, 15 ms poll).
+  the bus to the sensor hub task (exclusive owner; touch 15 ms, IMU
+  ~105 ms, PMU/RTC ~1 s staggered — worst-case bus traffic <1.5 ms/tick
+  at 400 kHz, so touch latency is unaffected).
 
 Keep standalone diagnostic binaries in `src/bin/` (`i2c-scan`, `lcd-test`,
-`touch-test`) — they pay for themselves the first time the panel is black.
+`touch-test`, `sensor-test`) — they pay for themselves the first time the
+panel is black.
 
 API gotcha (embassy-executor 0.10): a `#[embassy_executor::task]` fn
 returns `Result<SpawnToken, SpawnError>` and `Spawner::spawn(token)`
