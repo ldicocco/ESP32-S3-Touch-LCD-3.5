@@ -1623,9 +1623,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "oxivgl"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ca6cde5559e957d32711b0cf75d085a6dfa8069745a7c8da254fad79a348e02"
+checksum = "bbbd8ba3b717ae560545653cd0358b51aa137712ff9fdfe4f29198505ee65c2a"
 dependencies = [
  "cfg-if",
  "critical-section",

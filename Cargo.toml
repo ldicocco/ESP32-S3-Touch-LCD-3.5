@@ -67,7 +67,7 @@ smoltcp = { version = "0.13.0", default-features = false, features = [
 
 # LVGL UI. Pinned exact: oxivgl is pre-1.0 and explicitly not API-stable.
 # `esp32s3` transitively enables oxivgl's `esp-hal` feature (flush pipeline).
-oxivgl     = { version = "=0.6.1", features = ["esp32s3", "log-04"] }
+oxivgl     = { version = "=0.7.0", features = ["esp32s3", "log-04"] }
 # Raw LVGL bindings, for the few calls oxivgl doesn't wrap.
 oxivgl_sys = { package = "oxivgl-sys", version = "=0.2.4", default-features = false }
 static_cell      = "2.1.1"
