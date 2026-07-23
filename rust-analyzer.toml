@@ -1,0 +1,4 @@
+# no_std target: don't check test/bench targets (they require the `test`
+# crate, which doesn't exist for xtensa-esp32s3-none-elf).
+cargo.allTargets = false
+check.allTargets = false

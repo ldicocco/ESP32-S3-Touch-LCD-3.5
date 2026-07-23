@@ -1,0 +1,17 @@
+[target.xtensa-esp32s3-none-elf]
+# dio/80mhz proven on the sibling 5-inch board; the W25Q128 may also do QIO —
+# untested here, verify separately before switching.
+runner = "espflash flash --monitor --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-size 16mb"
+
+[env]
+ESP_LOG = "info"
+
+[build]
+rustflags = [
+  "-C", "link-arg=-nostartfiles",
+]
+
+target = "xtensa-esp32s3-none-elf"
+
+[unstable]
+build-std = ["core"]
