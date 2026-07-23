@@ -7,3 +7,4 @@ pub mod ft6336;
 pub mod tca9554;
 pub mod touch;
 pub mod ui;
+pub mod wifi;
