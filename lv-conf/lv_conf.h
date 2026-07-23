@@ -30,9 +30,9 @@
 #define LV_USE_STDLIB_SPRINTF   LV_STDLIB_BUILTIN
 
 /* LVGL's primary pool: a real static array in internal-RAM .bss, so a hard RAM
- * cost. Kept small — the bulk of LVGL's heap is the PSRAM pool registered at
- * boot (main.rs), and internal RAM is the scarce resource here. */
-#define LV_MEM_SIZE             (32 * 1024U)
+ * cost (no PSRAM pool on this board — internal RAM only). 48 KiB fits the
+ * 4-tab demo UI (~24-26 KiB steady state) with realloc headroom. */
+#define LV_MEM_SIZE             (48 * 1024U)
 /* Raises TLSF's block_size_max to admit pools added at run time:
  * TLSF_MAX_POOL_SIZE = LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE (lv_tlsf.c).
  * Must be >= the largest pool ever passed to lv_mem_add_pool, or registration

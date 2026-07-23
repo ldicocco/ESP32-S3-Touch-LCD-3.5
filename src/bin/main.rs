@@ -14,17 +14,20 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
-use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::gpio::{DriveMode, Level, Output, OutputConfig};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::interrupt::Priority;
 use esp_hal::interrupt::software::SoftwareInterruptControl;
+use esp_hal::ledc::channel::ChannelIFace;
+use esp_hal::ledc::timer::TimerIFace;
+use esp_hal::ledc::{LSGlobalClkSource, Ledc, LowSpeed, channel, timer};
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_rtos::embassy::InterruptExecutor;
 use esp32_s3_touch_lcd_3_5::display::{HEIGHT, LVGL_BUF_BYTES, St7796, WIDTH, flush_task};
+use esp32_s3_touch_lcd_3_5::sensors::sensor_hub_task;
 use esp32_s3_touch_lcd_3_5::tca9554::{EXIO_LCD_RST, Tca9554};
-use esp32_s3_touch_lcd_3_5::touch::touch_task;
 use esp32_s3_touch_lcd_3_5::ui::DemoView;
 use esp32_s3_touch_lcd_3_5::wifi;
 use oxivgl::display::LvglBuffers;
@@ -35,6 +38,10 @@ use static_cell::StaticCell;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 static INT_EXECUTOR: StaticCell<InterruptExecutor<1>> = StaticCell::new();
+// The LEDC channel stores a reference to its timer (and the timer to the
+// Ledc block), so both live in StaticCells to make the channel 'static.
+static LEDC: StaticCell<Ledc<'static>> = StaticCell::new();
+static LEDC_TIMER: StaticCell<timer::Timer<'static, LowSpeed>> = StaticCell::new();
 
 #[embassy_executor::task]
 async fn heartbeat() {
@@ -59,7 +66,7 @@ async fn main(spawner: Spawner) -> ! {
   // Internal-RAM global heap (the reclaimed dram2 bootloader region — zero
   // .bss cost — plus a second .bss region: the Wi-Fi driver is the big
   // customer). oxivgl serves LVGL's render scratch from the Rust global
-  // allocator; LVGL widget memory comes from its own 32 KiB static pool
+  // allocator; LVGL widget memory comes from its own 48 KiB static pool
   // (LV_MEM_SIZE in lv-conf/lv_conf.h). No PSRAM anywhere: the SPI panel
   // needs no framebuffer — LVGL stripes flush straight out over SPI.
   esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
@@ -72,8 +79,8 @@ async fn main(spawner: Spawner) -> ! {
   spawner.spawn(heartbeat().expect("heartbeat task pool exhausted"));
 
   // I²C0 bus: the TCA9554 uses it for the panel-reset pulse only, then
-  // releases it to the FT6336 touch task, which owns it exclusively.
-  // (Revisit sharing when the AXP2101/RTC/IMU are brought up.)
+  // releases it to the sensor hub task, which owns it exclusively and
+  // multiplexes touch/IMU/PMU/RTC polling.
   let i2c = I2c::new(
     peripherals.I2C0,
     I2cConfig::default().with_frequency(Rate::from_khz(400)),
@@ -91,9 +98,26 @@ async fn main(spawner: Spawner) -> ! {
   Timer::after(Duration::from_millis(100)).await;
   let i2c = expander.release();
 
-  // Backlight on (plain GPIO for now; LEDC PWM is the brightness upgrade).
-  // The binding must outlive main — dropping it would float the pin.
-  let _backlight = Output::new(peripherals.GPIO6, Level::High, OutputConfig::default());
+  // Backlight: LEDC PWM on GPIO6, 5 kHz / 10-bit (demo parity). The UI's
+  // brightness slider drives it through sensors::BACKLIGHT_PCT.
+  let ledc = LEDC.init(Ledc::new(peripherals.LEDC));
+  ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+  let ledc_timer = LEDC_TIMER.init(ledc.timer::<LowSpeed>(timer::Number::Timer0));
+  ledc_timer
+    .configure(timer::config::Config {
+      duty: timer::config::Duty::Duty10Bit,
+      clock_source: timer::LSClockSource::APBClk,
+      frequency: Rate::from_khz(5),
+    })
+    .expect("LEDC timer config failed");
+  let mut backlight = ledc.channel::<LowSpeed>(channel::Number::Channel0, peripherals.GPIO6);
+  backlight
+    .configure(channel::config::Config {
+      timer: &*ledc_timer,
+      duty_pct: 100,
+      drive_mode: DriveMode::PushPull,
+    })
+    .expect("LEDC channel config failed");
 
   // ST7796 on SPI2 @ 80 MHz (blocking; stripes are pushed by flush_task).
   let spi = Spi::new(
@@ -118,7 +142,8 @@ async fn main(spawner: Spawner) -> ! {
   let hi_spawner = int_executor.start(Priority::min());
   hi_spawner.spawn(flush_task(panel).expect("flush task pool exhausted"));
 
-  spawner.spawn(touch_task(i2c).expect("touch task pool exhausted"));
+  // The hub owns the I²C bus (touch + IMU + PMU + RTC) and the backlight.
+  spawner.spawn(sensor_hub_task(i2c, backlight).expect("sensor hub task pool exhausted"));
 
   // Wi-Fi: STA + DHCP when WIFI_SSID/WIFI_PASSWORD were set at build time,
   // scan-only otherwise. Must run after esp_rtos::start and the heap.
