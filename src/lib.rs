@@ -8,6 +8,7 @@ pub mod ft6336;
 pub mod pcf85063;
 pub mod qmi8658;
 pub mod sensors;
+pub mod sntp;
 pub mod tca9554;
 pub mod touch;
 pub mod ui;

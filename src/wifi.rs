@@ -30,7 +30,9 @@ pub static WIFI_STATE: AtomicU8 = AtomicU8::new(STATE_UNCONFIGURED);
 /// IPv4 address as big-endian u32 (0 = none), for the UI.
 pub static WIFI_IP: AtomicU32 = AtomicU32::new(0);
 
-static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+/// Sockets: DHCP + DNS (both internal to the stack) + the SNTP UDP socket,
+/// plus one spare.
+static STACK_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
 
 /// Initializes the radio and network stack and spawns the Wi-Fi tasks.
 /// Call after `esp_rtos::start` and after the heap exists (the radio
@@ -88,6 +90,8 @@ pub fn start(spawner: &Spawner, wifi: WIFI<'static>) {
     WIFI_STATE.store(STATE_CONNECTING, Ordering::Relaxed);
     spawner.spawn(connection_task(controller).expect("connection task pool exhausted"));
     spawner.spawn(ip_task(stack).expect("ip task pool exhausted"));
+    // With a network there's a time source: keep the RTC synced via SNTP.
+    spawner.spawn(crate::sntp::sntp_task(stack).expect("sntp task pool exhausted"));
   } else {
     log::info!("Wi-Fi unconfigured (set WIFI_SSID/WIFI_PASSWORD at build time); scanning only");
     spawner.spawn(scan_task(controller).expect("scan task pool exhausted"));

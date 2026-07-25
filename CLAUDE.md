@@ -194,7 +194,13 @@ absent camera use they're free.
   **`embassy-net`** (0.9, DHCP/TCP/UDP) — Wi-Fi STA. Needs esp-rtos
   features `esp-alloc` + `esp-radio` (the radio blob rides on the esp-rtos
   scheduler; `esp_radio::wifi::new` must run after `esp_rtos::start`).
-  The driver allocates ~46 KiB from the esp-alloc heap at init.
+  The driver allocates ~46 KiB from the esp-alloc heap at init. With
+  credentials configured, `src/sntp.rs` additionally sets the PCF85063 over
+  SNTP (DNS → `pool.ntp.org`, one UDP round trip; needs embassy-net's `dns`
+  feature and a `StackResources<4>`): the result goes to the hub as
+  `RTC_SET_EPOCH` (seconds since 2000-01-01, *local* time —
+  `TZ_OFFSET_MINUTES` build-time env, default 0 = UTC, no DST logic),
+  re-synced every 24 h.
 
 ## Toolchain
 
@@ -282,8 +288,9 @@ chart 6 s @ 10 Hz, numeric readouts, bubble level, gyro line), `Play`
 (backlight brightness slider — actually dims the panel via LEDC —, 1 Hz
 stats table: IP/heaps/uptime), bottom tab bar, FPS/CPU overlay — plus
 **Wi-Fi STA** (scan, WPA2 connect, DHCP; credentials via
-`WIFI_SSID=x WIFI_PASSWORD=y cargo run --release`) and a 1 Hz debug-level
-heartbeat. LVGL pool after create: ~20 KiB used / 25 KiB free (of 48 KiB).
+`WIFI_SSID=x WIFI_PASSWORD=y cargo run --release`), **SNTP clock sync**
+(sets the PCF85063 once the network is up; `TZ_OFFSET_MINUTES=120` for
+local time) and a 1 Hz debug-level heartbeat. LVGL pool after create: ~20 KiB used / 25 KiB free (of 48 KiB).
 
 - `src/bin/main.rs` — entry point (`#[esp_rtos::main]`); heap = 73 744 B
   reclaimed dram2 + 64 KiB .bss (Wi-Fi is the big customer), TCA9554 panel
@@ -343,10 +350,12 @@ heartbeat. LVGL pool after create: ~20 KiB used / 25 KiB free (of 48 KiB).
   atomics for the UI (`IMU_SEQ` sample counter + per-axis mg/mdps,
   `BAT_MV`/`BAT_PERCENT` (0xFF = no battery)/`PMU_FLAGS`, packed
   `RTC_HMS`/`RTC_DATE`); consumes `BACKLIGHT_PCT` (applies LEDC duty,
-  clamped ≥5 %) and `RTC_SET` (time-of-day command, `swap(0)` handshake —
-  the future NTP hook). Drivers are constructed transiently per poll via
-  the `&mut bus` blanket I2c impl; a device that NACKs init or fails 5
-  consecutive polls is marked absent (never panics).
+  clamped ≥5 %) and `RTC_SET_EPOCH` (SNTP time-set command, `swap(0)`
+  handshake → civil-date conversion (`datetime_from_epoch`, Hinnant's
+  `civil_from_days` shifted to the 2000 epoch) → RTC write, which also
+  clears the oscillator-stop flag). Drivers are constructed transiently
+  per poll via the `&mut bus` blanket I2c impl; a device that NACKs init or
+  fails 5 consecutive polls is marked absent (never panics).
 - `src/ui/` — the four-tab UI: `mod.rs` (`DemoView`, shared `Theme` of
   Rc-backed `Style`s — oxivgl deprecates per-object inline style setters —
   bottom Tabview, one 1 Hz `oxivgl::timer::Timer` fanned out as a bool),
@@ -356,12 +365,18 @@ heartbeat. LVGL pool after create: ~20 KiB used / 25 KiB free (of 48 KiB).
   only when visible. The backlight slider writes `BACKLIGHT_PCT`.
 - `src/wifi.rs` — Wi-Fi STA: `wifi::start` builds the esp-radio
   controller + embassy-net stack (DHCP); with compile-time credentials it
-  spawns connect/net/ip tasks (state + IPv4 published via atomics for the
-  UI), without them it does a one-shot AP scan (serial) and parks. Open
+  spawns connect/net/ip/sntp tasks (state + IPv4 published via atomics for
+  the UI), without them it does a one-shot AP scan (serial) and parks. Open
   networks unsupported (assumes WPA2-personal). Passwords shaped exactly
   like dash-separated groups of four (`XXXX-XXXX-…`, router-label style)
   get their dashes stripped automatically (logged) — a genuine password
   of that shape would be mangled by this.
+- `src/sntp.rs` — SNTP client task (spawned only with Wi-Fi credentials):
+  waits for DHCP, DNS-resolves `pool.ntp.org`, one 48-byte UDP round trip
+  from local port 50123, sanity-checks the reply (mode 4, stratum ≠ 0,
+  ≥44 bytes, source address), adds `TZ_OFFSET_MINUTES`, hands the epoch to
+  the hub via `RTC_SET_EPOCH`; 24 h re-sync, 60 s retry, 15 s attempt
+  timeout. The RTC therefore holds *local* time and there is no DST logic.
 - `lv-conf/lv_conf.h` — LVGL v9.5 config (copied from the 5-inch repo;
   **48 KiB `LV_MEM_SIZE`** — bumped for the 4-tab UI —, Montserrat 8–48,
   perf monitor on). Changing it triggers a full LVGL C rebuild.

@@ -36,14 +36,22 @@ Wi-Fi status, and LVGL's FPS/CPU overlay — driven by the FT6336
 capacitive touch controller, plus **Wi-Fi** (station + DHCP via
 esp-radio/embassy-net). `cargo run --release` builds and flashes it.
 
-Wi-Fi credentials are compile-time env vars:
+Wi-Fi credentials (and the clock's timezone offset) are compile-time env
+vars:
 
 ```sh
-WIFI_SSID=MyNetwork WIFI_PASSWORD=secret cargo run --release
+WIFI_SSID=MyNetwork WIFI_PASSWORD=secret TZ_OFFSET_MINUTES=120 cargo run --release
 ```
 
 Without them the firmware just scans and logs nearby access points at
-boot; the UI shows "WiFi: unconfigured".
+boot; the UI shows "WiFi: unconfigured" and the clock stays unset.
+
+With credentials, the firmware also sets the PCF85063 RTC via **SNTP**
+(`pool.ntp.org`) shortly after DHCP hands out an address, and re-syncs
+every 24 h. The RTC stores local time: `TZ_OFFSET_MINUTES` is added to the
+NTP result (120 = CEST, 60 = CET, default 0 = UTC; no DST logic — rebuild
+when the clocks change). With a backup cell fitted on the RTC header, the
+time survives power-off.
 
 Keys quoted as dash-separated groups of four (`XXXX-XXXX-…`, as printed on
 many router labels) are accepted as-is — the dashes are stripped

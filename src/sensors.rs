@@ -2,8 +2,8 @@
 //! polling on a 15 ms ticker — touch every tick (unchanged cadence), IMU
 //! every 7th (~10 Hz), PMU and RTC staggered at ~1 Hz. Everything the UI
 //! needs is published as plain atomics (wifi.rs pattern, polled in
-//! `DemoView::update`); the UI talks back through [`BACKLIGHT_PCT`] and
-//! [`RTC_SET`].
+//! `DemoView::update`); the UI talks back through [`BACKLIGHT_PCT`], and
+//! the SNTP client hands over timestamps through [`RTC_SET_EPOCH`].
 //!
 //! Drivers are constructed transiently per poll via the `&mut bus` blanket
 //! impl of `embedded_hal::i2c::I2c` — zero-cost, and the hub keeps the only
@@ -56,9 +56,10 @@ pub const PMU_CHARGE_DONE: u8 = 1 << 4;
 pub static RTC_HMS: AtomicU32 = AtomicU32::new(0);
 /// RTC date, packed `year << 16 | month << 8 | day` (0 = not read yet).
 pub static RTC_DATE: AtomicU32 = AtomicU32::new(0);
-/// Set-time command, UI/NTP → hub: same packing as [`RTC_HMS`] (valid bit
-/// set). The hub consumes it with `swap(0)` and writes it to the RTC.
-pub static RTC_SET: AtomicU32 = AtomicU32::new(0);
+/// Set-time command, SNTP → hub: seconds since 2000-01-01 00:00:00 *local*
+/// time (0 = no command pending). The hub consumes it with `swap(0)` and
+/// writes it to the RTC.
+pub static RTC_SET_EPOCH: AtomicU32 = AtomicU32::new(0);
 
 /// Backlight brightness percent: the UI writes it, the hub applies it to
 /// the LEDC channel (clamped to ≥ 5 % so the panel can't go irrecoverably
@@ -235,7 +236,7 @@ pub async fn sensor_hub_task(mut i2c: I2c<'static, Blocking>, backlight: Channel
       }
     }
 
-    let set = RTC_SET.swap(0, Ordering::Relaxed);
+    let set = RTC_SET_EPOCH.swap(0, Ordering::Relaxed);
     if set != 0 && rtc.ok {
       set_rtc(&mut i2c, &mut rtc, set);
     }
@@ -311,24 +312,49 @@ fn poll_rtc(i2c: &mut I2c<'static, Blocking>, health: &mut Health) {
   RTC_HMS.store(if valid { hms } else { hms & !HMS_VALID }, Ordering::Relaxed);
 }
 
-/// Applies a UI/NTP time-set command: keeps the RTC's current date, swaps
-/// in the commanded time of day, and publishes the result immediately.
-fn set_rtc(i2c: &mut I2c<'static, Blocking>, health: &mut Health, command: u32) {
-  let Some((hour, minute, second)) = unpack_hms(command) else {
-    return;
-  };
-  let mut dev = Pcf85063::new(&mut *i2c);
-  let Some((current, _)) = health.check(dev.read()) else {
-    return;
-  };
-  let dt = DateTime {
-    hour,
-    minute,
-    second,
-    ..current
-  };
-  if health.check(dev.set(&dt)).is_some() {
-    log::info!("RTC set to {hour:02}:{minute:02}:{second:02}");
+/// Applies an SNTP time-set command (writing the time also clears the
+/// RTC's oscillator-stop flag, validating the clock) and re-publishes.
+fn set_rtc(i2c: &mut I2c<'static, Blocking>, health: &mut Health, epoch: u32) {
+  let dt = datetime_from_epoch(epoch);
+  if health.check(Pcf85063::new(&mut *i2c).set(&dt)).is_some() {
+    log::info!(
+      "RTC set to {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+      dt.year,
+      dt.month,
+      dt.day,
+      dt.hour,
+      dt.minute,
+      dt.second
+    );
     poll_rtc(i2c, health);
+  }
+}
+
+/// Civil-date conversion (Howard Hinnant's `civil_from_days`), shifted to
+/// the RTC epoch: `epoch` counts seconds since 2000-01-01 00:00:00.
+fn datetime_from_epoch(epoch: u32) -> DateTime {
+  let days = i64::from(epoch / 86_400);
+  let rem = epoch % 86_400;
+  // 2000-01-01 is day 730_425 of the proleptic-Gregorian era base
+  // 0000-03-01 used by the algorithm.
+  let z = days + 730_425;
+  let era = z / 146_097;
+  let doe = z - era * 146_097;
+  let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  let mp = (5 * doy + 2) / 153;
+  let day = doy - (153 * mp + 2) / 5 + 1;
+  let (year, month) = if mp < 10 {
+    (era * 400 + yoe, mp + 3)
+  } else {
+    (era * 400 + yoe + 1, mp - 9)
+  };
+  DateTime {
+    year: year as u16,
+    month: month as u8,
+    day: day as u8,
+    hour: (rem / 3_600) as u8,
+    minute: ((rem / 60) % 60) as u8,
+    second: (rem % 60) as u8,
   }
 }
